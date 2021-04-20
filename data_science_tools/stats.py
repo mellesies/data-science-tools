@@ -12,6 +12,14 @@ from IPython.display import display
 from .boxes import *
 from .table_display import *
 
+__DEBUG__ = False
+
+
+def debug(*args, **kwargs):
+    if __DEBUG__:
+        print(*args, **kwargs)
+
+
 class Chi2Result(object):
 
     def __init__(self, name1: str, name2: str, xs: pd.DataFrame, dof: int,
@@ -70,6 +78,196 @@ def Chi2(col1: pd.Series, col2: pd.Series, show_crosstab=False) -> Chi2Result:
         display(xs)
 
     return Chi2Result(col1.name, col2.name, xs, dof, p)
+
+
+class CMHResult(object):
+    """Represents the result of a Cochran-Mantel-Haenszel Chi2 analysis."""
+
+    def __init__(self, STATISTIC, df, p, var1, var2, stratifier, alpha=0.05):
+        """
+        Initialize a new CMHResult.
+
+            STATISTIC: X2 statistic
+            df: degrees of freedom
+            p: p-value
+        """
+        self.STATISTIC = STATISTIC
+        self.df = df
+        self.p = p
+        self.var1 = var1
+        self.var2 = var2
+        self.stratifier = stratifier
+        self.alpha = alpha
+
+    def __repr__(self):
+        stat = round(self.STATISTIC, 5)
+        pval = round(self.p, 4)
+        df = self.df
+
+        return textwrap.dedent(f"""
+                Cochran-Mantel-Haenszel Chi2 test
+
+        "{self.var1}" x "{self.var2}", stratified by "{self.stratifier}"
+
+        Cochran-Mantel-Haenszel M^2 = {stat}, df = {df}, p-value = {pval}
+        """)
+
+    def _repr_html_(self):
+        stat = round(self.STATISTIC, 5)
+        pval = round(self.p, 4)
+        df = self.df
+        tpl = f"""
+        <div style="font-family: courier; font-size: 10pt; padding: 0px 10px;">
+            <div style="text-align:center">
+                Cochran-Mantel-Haenszel Chi&#x00B2; test
+            </div>
+
+            <div>
+                <b>{self.var1}</b> x <b>{self.var2}</b>,
+                stratified by <b>{self.stratifier}</b>
+            </div>
+            <div>
+                Cochran-Mantel-Haenszel
+                    M^2 = {stat},
+                    df = {df},
+                    p-value = <b>{pval}</b>
+            </div>
+        </div>
+        """
+
+        if pval > self.alpha:
+            return box(tpl, '#efefef', '#cfcfcf')
+        return box(tpl, '#b0cbe9', '#4393e1')
+
+
+def CMH(df: pd.DataFrame, var: str, outcome: str, stratifier: str, raw=False):
+    """Compute the CMH statistic.
+
+    Based on "Categorical Data Analysis", page 295 by Agresti (2002) and
+    R implementation of mantelhaen.test().
+    """
+    df = df.copy()
+    df[outcome] = df[outcome].astype('category')
+    df[var] = df[var].astype('category')
+    df[stratifier] = df[stratifier].astype('category')
+
+    # Compute contingency table size KxIxJ
+    I = len(df[outcome].cat.categories)
+    J = len(df[var].cat.categories)
+    K = len(df[stratifier].cat.categories)
+
+    contingency_tables = np.zeros((I, J, K), dtype='float')
+
+    # Create stratified contingency tables
+    for k in range(K):
+        cat = df[stratifier].cat.categories[k]
+
+        subset = df.loc[df[stratifier] == cat, [var, outcome]]
+        xs = pd.crosstab(subset[outcome], subset[var], dropna=False)
+        contingency_tables[:, :, k] = xs
+
+    # Compute the actual CMH
+    STATISTIC, df, pval = CMH_numpy(contingency_tables)
+
+    if raw:
+        return STATISTIC, df, pval
+
+    return CMHResult(STATISTIC, df, pval, var, outcome, stratifier)
+
+
+def CMH_numpy(X):
+    """Compute the CMH statistic.
+
+    Based on "Categorical Data Analysis", page 295 by Agresti (2002) and
+    R implementation of mantelhaen.test().
+    """
+    # I: nr. of rows
+    # J: nr. of columns
+    # K: nr. of strata
+    # ⚠️ Note: this does *not* match the format used when printing!
+
+    I, J, K = X.shape
+
+    debug(f"I: {I}, J: {J}, K: {K}")
+    debug()
+
+    df = (I - 1) * (J - 1)
+    debug(f'{df} degree(s) of freedom')
+
+    # Initialize m and n to a vector(0) of length df
+    n = np.zeros(df)
+    m = np.zeros(df)
+    V = np.zeros((df, df))
+
+    # iterate over the strata
+    for k in range(K):
+        debug(f'partial {k}')
+        # f holds partial contigency table k
+        f = X[:, :, k]
+
+        # debuggin'
+        debug('  f:')
+        debug(f)
+        debug()
+
+        # Sum of *all* values in the partial table
+        ntot = f.sum()
+        debug(f'  ntot: {ntot}')
+
+        # Compute the sum over all row/column entries *excluding* the last
+        # entry. The last entries are excluded, as they hold redundant
+        # information in combination with the row/column totals.
+        colsums = f.sum(axis=0)[:-1]
+        rowsums = f.sum(axis=1)[:-1]
+
+        debug('  rowsums:', rowsums)
+        debug('  colsums:', colsums)
+
+        # f[-I, -J] holds the partial matrix, excluding the last row & column.
+        # The result is reshaped into a vector.
+        debug('  f[:-1, :-1].reshape(-1): ', f[:-1, :-1].reshape(-1))
+        n = n + f[:-1, :-1].reshape(-1)
+
+        # Take the outer product of the row- and colsums, divide it by the
+        # total of the partial table. Yields a vector of length df. This holds
+        # the expected value under the assumption of conditional independence.
+        m_k = (np.outer(rowsums, colsums) / ntot).reshape(-1)
+        m = m + m_k
+        debug('  m_k:', m_k)
+        debug()
+
+        # V_k holds the null covariance matrix (matrices).
+        k1 = np.diag(ntot * colsums)[:J, :J] - np.outer(colsums, colsums)
+        k2 = np.diag(ntot * rowsums)[:I, :I] - np.outer(rowsums, rowsums)
+
+        debug('np.kron(k1, k2):')
+        debug(np.kron(k1, k2))
+        debug()
+
+        V_k = np.kron(k1, k2) / (ntot**2 * (ntot - 1))
+
+        debug('  V_k:')
+        debug(V_k)
+
+        V = V + V_k
+
+        debug()
+
+    # Subtract the mean from the entries
+    n = n - m
+    debug(f'n: {n}')
+    debug()
+
+    debug('np.linalg.solve(V, n):')
+    debug(np.linalg.solve(V, n))
+    debug()
+
+    STATISTIC = np.inner(n, np.linalg.solve(V, n).transpose())
+    debug('STATISTIC:', STATISTIC)
+
+    pval = 1 - stats.chi2.cdf(STATISTIC, df)
+
+    return STATISTIC, df, pval
 
 
 def table1(df, vars, outcome, p_name='p', p_precision=None, title=''):
