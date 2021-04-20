@@ -6,4 +6,5 @@ __version__ = '0.1.0'
 from . import boxes
 from . import jupyter
 from . import stats
+from . import pandas
 from .table_display import *
