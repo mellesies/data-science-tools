@@ -21,6 +21,10 @@ def debug(*args, **kwargs):
 
 
 class Chi2Result(object):
+    """Chi2 result class.
+
+        Primarily used for pretty-printing results.
+    """
 
     def __init__(self, name1: str, name2: str, xs: pd.DataFrame, dof: int,
                  p: float, alpha=0.05):

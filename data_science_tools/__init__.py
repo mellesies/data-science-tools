@@ -3,8 +3,11 @@ __author__ = """Melle Sieswerda"""
 __email__ = 'melle.sieswerda@gmail.com'
 __version__ = '0.1.0'
 
-from . import boxes
-from . import jupyter
-from . import stats
-from . import pandas
-from .table_display import *
+
+from . import boxes # noqa
+from . import jupyter # noqa
+from . import pandas # noqa
+from . import plot # noqa
+from . import stats # noqa
+from . import surv # noqa
+from .table_display import * # noqa
